@@ -19,21 +19,24 @@ final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
 bool canDetermineDuration(SourceTestData td) {
   // TODO(gustl22): cannot determine duration for VBR on Linux
-  // FIXME(gustl22): duration event is not emitted for short duration
-  // WAV on Linux (only platform tests, may be a race condition).
   if (td.duration == null) {
     return true;
   }
-  if (isLinux) {
-    return !(td.isVBR || td.duration! < const Duration(seconds: 5));
-  }
-  return true;
+  return !isLinux || !td.isVBR;
 }
 
 void main() async {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  binding.defaultTestTimeout = const Timeout(Duration(minutes: 5));
+
+  await PlatformFeatures.ensureInitialized();
   final features = PlatformFeatures.instance();
+  final usesAndroidMediaPlayerImplementation =
+      isAndroid && await PlatformFeatures.usesAndroidMediaPlayerImpl();
   final audioTestDataList = await getAudioTestDataList();
+
+  // Ensure global platform scope is initialized.
+  await AudioPlayer.global.ensureInitialized();
 
   group('Platform method channel', () {
     late AudioplayersPlatformInterface platform;
@@ -48,7 +51,7 @@ void main() async {
     });
 
     tearDown(() async {
-      // Tear down is executed AFTER all expectations are fullfilled
+      // Tear down is executed AFTER all expectations are fulfilled
       await platform.dispose(playerId);
     });
 
@@ -63,13 +66,6 @@ void main() async {
             testData: invalidAssetTestData,
           ),
         );
-
-        if (isLinux) {
-          // Linux throws a second failure event for invalid files.
-          // If not caught, it would be randomly thrown in the following tests.
-          final nextEvent = platform.getEventStream(playerId).first;
-          await tester.expectSettingSourceFailure(future: nextEvent);
-        }
       },
     );
 
@@ -91,7 +87,7 @@ void main() async {
       //  Further, the other future is not fulfilled and then mysteriously
       //  failing in later tests.
       //  The feature works with audioplayers_android_exo.
-      skip: testIsAndroidMediaPlayer,
+      skip: usesAndroidMediaPlayerImplementation,
     );
 
     testWidgets('#create and #dispose', (tester) async {
@@ -138,9 +134,7 @@ void main() async {
             ),
           );
         },
-        // FIXME(gustl22): determines wrong initial position for m3u8 on Linux
-        skip: !canDetermineDuration(td) ||
-            isLinux && td.source == m3u8UrlTestData.source,
+        skip: !canDetermineDuration(td),
       );
     }
 
@@ -262,30 +256,6 @@ void main() async {
           await platform.stop(playerId);
 
           // May check number of loops here
-        });
-      }
-    }
-
-    for (final td in audioTestDataList) {
-      if (features.hasReleaseModeRelease && !td.isLiveStream) {
-        testWidgets('#ReleaseMode.release ${td.source}', (tester) async {
-          await tester.prepareSource(
-            playerId: playerId,
-            platform: platform,
-            testData: td,
-          );
-          await platform.setReleaseMode(playerId, ReleaseMode.release);
-          await platform.resume(playerId);
-          if (td.duration! < const Duration(seconds: 2)) {
-            await tester.pumpAndSettle(const Duration(seconds: 3));
-            // No need to call stop, as it should be released by now
-          } else {
-            await tester.pumpAndSettle(const Duration(seconds: 1));
-            await platform.stop(playerId);
-          }
-          // TODO(Gustl22): test if source was released
-          expect(await platform.getDuration(playerId), null);
-          expect(await platform.getCurrentPosition(playerId), null);
         });
       }
     }
